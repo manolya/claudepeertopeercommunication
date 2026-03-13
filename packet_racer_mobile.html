@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#020408">
+<title>Packet Racer</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;500;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{width:100%;height:100%;overflow:hidden;background:#020408;color:#b4c6d4;
+  font-family:'Azeret Mono','Courier New',monospace;touch-action:none;user-select:none;}
+#app{display:flex;flex-direction:column;height:100%;width:100%;max-width:500px;margin:0 auto;}
+canvas{display:block;width:100%;border-radius:8px;border:1px solid rgba(0,240,255,0.06);}
+.hdr{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;}
+.title{font-size:16px;font-weight:700;letter-spacing:0.1em;}
+.title .c{color:#00f0ff;text-shadow:0 0 15px rgba(0,240,255,0.3);}
+.title .y{color:#ffe216;text-shadow:0 0 15px rgba(255,226,22,0.3);}
+.stats{display:flex;gap:12px;}
+.stat{text-align:center;}
+.stat .v{font-size:14px;font-weight:700;}
+.stat .l{font-size:7px;color:#3a5068;letter-spacing:0.1em;}
+.hops-panel{flex:1;overflow-y:auto;padding:6px 10px;-webkit-overflow-scrolling:touch;}
+.hop-btn{display:flex;justify-content:space-between;align-items:center;width:100%;
+  padding:14px 16px;margin-bottom:6px;border-radius:8px;border:1px solid rgba(0,240,255,0.1);
+  background:rgba(0,240,255,0.03);color:#e8f4ff;font-family:inherit;font-size:14px;
+  font-weight:600;cursor:pointer;transition:all 0.15s;-webkit-appearance:none;}
+.hop-btn:active{transform:scale(0.97);filter:brightness(1.3);}
+.hop-btn.dest{border-color:rgba(255,226,22,0.25);background:rgba(255,226,22,0.06);}
+.hop-btn .cost{font-weight:700;font-size:13px;}
+.cost-low{color:#00ff88;} .cost-med{color:#ffe216;} .cost-high{color:#ff2d78;}
+.events{padding:6px 10px;max-height:60px;overflow-y:auto;font-size:9px;color:#3a5068;}
+.events div{padding:1px 0;border-left:2px solid transparent;padding-left:6px;}
+.events div:first-child{color:#b4c6d4;}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:9px;letter-spacing:0.1em;
+  background:rgba(0,240,255,0.05);border:1px solid rgba(0,240,255,0.15);color:#00f0ff;}
+.overlay{position:absolute;inset:0;background:rgba(2,4,8,0.88);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;z-index:10;padding:20px;}
+.overlay h2{font-size:28px;font-weight:700;letter-spacing:0.1em;margin-bottom:8px;}
+.overlay p{font-size:12px;color:#3a5068;margin-bottom:16px;text-align:center;}
+.btn{padding:12px 28px;border-radius:8px;border:none;cursor:pointer;font-family:inherit;
+  font-size:13px;font-weight:700;letter-spacing:0.06em;transition:all 0.15s;}
+.btn:active{transform:scale(0.95);}
+.btn-cyan{background:#00f0ff;color:#020408;}
+.btn-ghost{background:transparent;color:#3a5068;border:1px solid #1a2a3a;}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;}
+.menu-card{background:#060c18;border:1px solid #1a2a3a;border-radius:10px;padding:16px 20px;
+  min-width:140px;text-align:left;cursor:pointer;transition:all 0.15s;}
+.menu-card:active{transform:scale(0.97);border-color:rgba(0,240,255,0.3);}
+.menu-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:10px;width:100%;}
+.status-bar{display:flex;gap:6px;padding:4px 10px;justify-content:center;flex-wrap:wrap;}
+::-webkit-scrollbar{width:2px;}::-webkit-scrollbar-thumb{background:rgba(0,240,255,0.1);border-radius:1px;}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+"use strict";
+
+/* ═══════════════════════════════════════════════════════════
+   PACKET RACER — Mobile HTML5 Version
+   ═══════════════════════════════════════════════════════════ */
+
+const LEVELS = [
+  {name:"LOCAL NET",nodes:8,failRate:0.005,shiftRate:0.008,bonus:200,desc:"Suburban LAN",chaos:"Low"},
+  {name:"METRO RING",nodes:10,failRate:0.011,shiftRate:0.018,bonus:300,desc:"City backbone",chaos:"Med"},
+  {name:"BACKBONE",nodes:13,failRate:0.017,shiftRate:0.028,bonus:450,desc:"Continental fiber",chaos:"High"},
+  {name:"DEEP WEB",nodes:16,failRate:0.024,shiftRate:0.038,bonus:600,desc:"Dark net",chaos:"Extreme"},
+];
+
+const app = document.getElementById("app");
+let state = {screen:"menu",level:0,bestScores:[0,0,0,0],totalScore:0};
+let graph = null;
+let gState = null; // gameplay state
+let canvas, ctx, canvasW, canvasH;
+let animId = null;
+let lastT = 0;
+
+/* ── Graph Builder ─────────────────────────────────────────── */
+function buildGraph(lv) {
+  const n = LEVELS[lv].nodes;
+  const W = 400, H = 380;
+  const nodes = [];
+  const ring = Math.ceil(n*0.6), inner = n - ring;
+  const cx=W/2, cy=H/2, r=Math.min(W,H)*0.36;
+  for(let i=0;i<ring;i++){
+    const a=Math.PI*2*i/ring-Math.PI/2;
+    nodes.push({id:i,x:cx+r*Math.cos(a)+(Math.random()-.5)*25,y:cy+r*Math.sin(a)+(Math.random()-.5)*25,name:`R${i.toString(16).toUpperCase()}`});
+  }
+  for(let i=0;i<inner;i++){
+    const a=Math.random()*Math.PI*2,d=Math.random()*r*0.5;
+    nodes.push({id:ring+i,x:cx+d*Math.cos(a)+(Math.random()-.5)*30,y:cy+d*Math.sin(a)+(Math.random()-.5)*30,name:`N${(ring+i).toString(16).toUpperCase()}`});
+  }
+  const links = [];
+  const addL=(a,b)=>{
+    if(a===b)return;if(links.find(l=>(l.a===a&&l.b===b)||(l.a===b&&l.b===a)))return;
+    const dx=nodes[a].x-nodes[b].x,dy=nodes[a].y-nodes[b].y;
+    links.push({id:links.length,a,b,baseCost:Math.round(30+Math.sqrt(dx*dx+dy*dy)*0.8+Math.random()*60),cost:0,alive:true,failing:false,failT:0,heat:0});
+  };
+  for(let i=0;i<ring;i++)addL(i,(i+1)%ring);
+  for(let i=0;i<ring;i++)addL(i,(i+Math.floor(ring/3)+Math.floor(Math.random()*2))%ring);
+  for(let i=ring;i<n;i++){
+    const ds=nodes.map((nd,j)=>({j,d:Math.hypot(nd.x-nodes[i].x,nd.y-nodes[i].y)})).filter(d=>d.j!==i).sort((a,b)=>a.d-b.d);
+    for(let k=0;k<Math.min(3,ds.length);k++)addL(i,ds[k].j);
+  }
+  for(let i=0;i<n;i++){
+    if(!links.some(l=>l.a===i||l.b===i)){
+      const nr=nodes.map((nd,j)=>({j,d:Math.hypot(nd.x-nodes[i].x,nd.y-nodes[i].y)})).filter(d=>d.j!==i).sort((a,b)=>a.d-b.d)[0];
+      addL(i,nr.j);
+    }
+  }
+  links.forEach(l=>{l.cost=l.baseCost;});
+  const startId=0;
+  let maxD=0,endId=1;
+  nodes.forEach((nd,i)=>{if(i===0)return;const d=Math.hypot(nd.x-nodes[0].x,nd.y-nodes[0].y);if(d>maxD){maxD=d;endId=i;}});
+  return {nodes,links,startId,endId,W,H};
+}
+
+function getNeighbors(nid,links){
+  return links.filter(l=>l.alive&&(l.a===nid||l.b===nid)).map(l=>({lid:l.id,nid:l.a===nid?l.b:l.a,cost:l.cost}));
+}
+
+function dijkstra(nodes,links,from,to){
+  const dist={},prev={},vis={};
+  nodes.forEach(n=>{dist[n.id]=Infinity;prev[n.id]=null;});
+  dist[from]=0;
+  for(let i=0;i<nodes.length;i++){
+    let u=-1,b=Infinity;nodes.forEach(n=>{if(!vis[n.id]&&dist[n.id]<b){b=dist[n.id];u=n.id;}});
+    if(u===-1||u===to)break;vis[u]=true;
+    links.forEach(l=>{if(!l.alive)return;let v=-1;if(l.a===u)v=l.b;else if(l.b===u)v=l.a;else return;
+      if(dist[u]+l.cost<dist[v]){dist[v]=dist[u]+l.cost;prev[v]=u;}});
+  }
+  const path=[];let c=to;while(c!==null){path.unshift(c);c=prev[c];}
+  return {cost:dist[to],path:dist[to]<Infinity?path:[]};
+}
+
+/* ── Rendering ─────────────────────────────────────────────── */
+function render(t) {
+  if(!canvas||!ctx||!graph||!gState)return;
+  const dt=lastT?(t-lastT)/1000:0.016;lastT=t;
+  const g=graph,s=gState,lv=LEVELS[state.level];
+  const W=g.W,H=g.H;
+
+  // Chaos updates
+  if(s.phase==="playing"||s.phase==="traveling"){
+    g.links.forEach(l=>{
+      if(l.alive&&!l.failing&&Math.random()<lv.failRate*dt){
+        l.failing=true;l.failT=2+Math.random()*3;
+        addEvent(`⚡ ${g.nodes[l.a].name}↔${g.nodes[l.b].name} failing!`,"#ff2d78");
+      }
+      if(l.failing){l.failT-=dt;if(l.failT<=0){l.alive=false;l.failing=false;}}
+      if(!l.alive&&Math.random()<lv.failRate*0.25*dt){l.alive=true;l.cost=l.baseCost+Math.round(Math.random()*40);addEvent(`✓ ${g.nodes[l.a].name}↔${g.nodes[l.b].name} back`,"#00ff88");}
+      if(l.alive&&Math.random()<lv.shiftRate*dt)l.cost=Math.max(20,l.baseCost+Math.round((Math.random()-.5)*80));
+      l.heat=Math.max(0,l.heat-dt*0.8);
+    });
+  }
+
+  // Travel
+  if(s.phase==="traveling"){
+    s.travelProg+=dt*2.8;
+    if(s.travelProg>=1){
+      s.currentNode=s.travelTo;
+      s.path.push(s.travelTo);
+      s.hops++;
+      s.totalCost+=s.travelCost;
+      s.combo=Math.min(3,s.combo+0.1);
+      s.travelProg=0;s.travelTo=null;
+      if(s.currentNode===g.endId){
+        s.phase="arrived";
+        const opt=dijkstra(g.nodes,g.links,g.startId,g.endId).cost;
+        const eff=opt>0?Math.max(0,Math.round((opt/s.totalCost)*100)):100;
+        s.score=Math.round(eff*10*s.combo+lv.bonus);
+        state.totalScore+=s.score;
+        if(s.score>state.bestScores[state.level])state.bestScores[state.level]=s.score;
+        addEvent(`★ DELIVERED! Score: ${s.score}`,"#ffe216");
+      } else {
+        const rem=dijkstra(g.nodes,g.links,s.currentNode,g.endId);
+        if(rem.cost===Infinity){s.phase="dead";addEvent("✗ STRANDED — No route!","#ff2d78");}
+        else s.phase="playing";
+      }
+      rebuildHops();
+    }
+  }
+
+  // Ghost
+  if(s.ghostPath.length>1&&(s.phase==="playing"||s.phase==="traveling"))
+    s.ghostProg=Math.min(1,s.ghostProg+dt*0.35);
+
+  // Draw
+  const dpr=window.devicePixelRatio||1;
+  ctx.clearRect(0,0,canvas.width/dpr,canvas.height/dpr);
+  ctx.fillStyle="#020408";ctx.fillRect(0,0,W,H);
+
+  // Grid
+  ctx.strokeStyle="rgba(0,240,255,0.02)";ctx.lineWidth=0.5;
+  for(let x=0;x<W;x+=30){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=30){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  const nbs=s.phase==="playing"?getNeighbors(s.currentNode,g.links):[];
+
+  // Ghost trail
+  if(s.ghostPath.length>1){
+    ctx.strokeStyle="rgba(255,45,120,0.05)";ctx.lineWidth=10;ctx.setLineDash([]);
+    ctx.beginPath();
+    s.ghostPath.forEach((nid,i)=>{const nd=g.nodes[nid];if(i===0)ctx.moveTo(nd.x,nd.y);else ctx.lineTo(nd.x,nd.y);});
+    ctx.stroke();
+    const ts=s.ghostPath.length-1,gs=s.ghostProg*ts,gi=Math.min(Math.floor(gs),ts-1),gt=gs-gi;
+    const gf=g.nodes[s.ghostPath[gi]],gto=g.nodes[s.ghostPath[gi+1]];
+    if(gf&&gto){
+      const gx=gf.x+(gto.x-gf.x)*gt,gy=gf.y+(gto.y-gf.y)*gt;
+      ctx.fillStyle="rgba(255,45,120,0.12)";ctx.beginPath();ctx.arc(gx,gy,8,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle="rgba(255,45,120,0.35)";ctx.beginPath();ctx.arc(gx,gy,3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle="rgba(255,45,120,0.35)";ctx.font="bold 6px 'Azeret Mono',monospace";ctx.textAlign="center";ctx.fillText("GHOST",gx,gy-9);
+    }
+  }
+
+  // Player path trail
+  if(s.path.length>1){
+    ctx.strokeStyle="rgba(0,240,255,0.1)";ctx.lineWidth=6;ctx.setLineDash([]);ctx.beginPath();
+    s.path.forEach((nid,i)=>{const nd=g.nodes[nid];if(i===0)ctx.moveTo(nd.x,nd.y);else ctx.lineTo(nd.x,nd.y);});
+    ctx.stroke();
+  }
+
+  // Links
+  g.links.forEach(l=>{
+    const a=g.nodes[l.a],b=g.nodes[l.b];
+    if(!l.alive&&!l.failing){
+      ctx.strokeStyle="rgba(255,45,120,0.06)";ctx.lineWidth=0.5;ctx.setLineDash([2,6]);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);return;
+    }
+    const isOpt=nbs.some(nb=>nb.lid===l.id);
+    const alpha=l.failing?0.15+Math.sin(t*0.02)*0.1:isOpt?0.3:0.05+l.heat*0.3;
+    ctx.strokeStyle=l.failing?`rgba(255,45,120,${alpha})`:isOpt?`rgba(255,226,22,${alpha})`:`rgba(0,240,255,${alpha})`;
+    ctx.lineWidth=isOpt?2:1+l.heat*1.5;
+    ctx.setLineDash(l.failing?[3,5]:isOpt?[5,4]:[]);ctx.lineDashOffset=-t*0.01;
+    ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);
+    if(isOpt&&l.alive){
+      const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+      ctx.fillStyle="rgba(0,0,0,0.5)";const tw=28;
+      ctx.fillRect(mx-tw/2,my-7,tw,13);
+      ctx.fillStyle=l.cost<80?"#00ff88":l.cost<150?"#ffe216":"#ff2d78";
+      ctx.font="bold 8px 'Azeret Mono',monospace";ctx.textAlign="center";ctx.fillText(l.cost+"µs",mx,my+3);
+    }
+  });
+
+  // Nodes
+  g.nodes.forEach((nd,ni)=>{
+    const{x,y,name}=nd;
+    const isS=ni===g.startId,isE=ni===g.endId,isC=ni===s.currentNode;
+    const isV=s.path.includes(ni),isN=nbs.some(nb=>nb.nid===ni);
+    const r=isS||isE?18:14;const pulse=Math.sin(t*0.003+ni*1.7)*0.3+0.7;
+
+    if(isC||isE){
+      const gg=ctx.createRadialGradient(x,y,r*0.5,x,y,r*3);
+      gg.addColorStop(0,isC?"rgba(0,240,255,0.12)":"rgba(255,226,22,0.08)");
+      gg.addColorStop(1,"transparent");
+      ctx.fillStyle=gg;ctx.beginPath();ctx.arc(x,y,r*3,0,Math.PI*2);ctx.fill();
+    }
+    if(isN){
+      ctx.strokeStyle="rgba(255,226,22,0.2)";ctx.lineWidth=1.5;ctx.setLineDash([3,3]);ctx.lineDashOffset=-t*0.015;
+      ctx.beginPath();ctx.arc(x,y,r+6,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+    }
+    let fill,stroke;
+    if(isC){fill="rgba(0,240,255,0.15)";stroke="#00f0ff";}
+    else if(isE){fill="rgba(255,226,22,0.1)";stroke="#ffe216";}
+    else if(isS){fill="rgba(0,255,136,0.08)";stroke="#00ff88";}
+    else if(isV){fill="rgba(0,240,255,0.04)";stroke="rgba(0,240,255,0.25)";}
+    else if(isN){fill="rgba(255,226,22,0.03)";stroke="rgba(255,226,22,0.2)";}
+    else{fill="rgba(58,80,104,0.04)";stroke="rgba(58,80,104,0.15)";}
+    ctx.fillStyle=fill;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=stroke;ctx.lineWidth=isC?2:1.5;ctx.globalAlpha=0.5+pulse*0.5;ctx.stroke();ctx.globalAlpha=1;
+    if(isC||isE){
+      ctx.save();ctx.translate(x,y);ctx.rotate(t*0.002*(isC?1:-1));
+      ctx.strokeStyle=(isC?"#00f0ff":"#ffe216")+"30";ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(0,0,r+3,0,Math.PI*0.8);ctx.stroke();
+      ctx.beginPath();ctx.arc(0,0,r+3,Math.PI,Math.PI*1.8);ctx.stroke();ctx.restore();
+    }
+    ctx.fillStyle=isC?"#00f0ff":isE?"#ffe216":isS?"#00ff88":isV?"rgba(0,240,255,0.4)":"#3a5068";
+    ctx.font=`bold ${isS||isE?8:7}px 'Azeret Mono',monospace`;ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(name,x,y);
+    if(isS){ctx.fillStyle="#00ff8860";ctx.font="5px 'Azeret Mono',monospace";ctx.fillText("START",x,y+r+8);}
+    if(isE){ctx.fillStyle="#ffe21660";ctx.font="5px 'Azeret Mono',monospace";ctx.fillText("★DEST",x,y+r+8);}
+  });
+
+  // Traveling packet
+  if(s.phase==="traveling"&&s.travelTo!==null){
+    const fr=g.nodes[s.currentNode],to=g.nodes[s.travelTo],p=Math.min(1,s.travelProg);
+    const px=fr.x+(to.x-fr.x)*p,py=fr.y+(to.y-fr.y)*p;
+    const pg=ctx.createRadialGradient(px,py,0,px,py,22);
+    pg.addColorStop(0,"rgba(0,240,255,0.25)");pg.addColorStop(1,"transparent");
+    ctx.fillStyle=pg;ctx.beginPath();ctx.arc(px,py,22,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle="rgba(0,240,255,0.35)";ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(fr.x,fr.y);ctx.lineTo(px,py);ctx.stroke();
+    ctx.fillStyle="#00f0ff";ctx.beginPath();ctx.arc(px,py,6,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(px,py,2.5,0,Math.PI*2);ctx.fill();
+  }
+
+  // Current node indicator
+  if(s.phase==="playing"){
+    const cn=g.nodes[s.currentNode];
+    ctx.fillStyle="#00f0ff";ctx.font="10px serif";ctx.textAlign="center";ctx.fillText("▼",cn.x,cn.y-22);
+  }
+
+  animId=requestAnimationFrame(render);
+}
+
+/* ── Events log ────────────────────────────────────────────── */
+let events=[];
+function addEvent(text,color){
+  events=[{text,color},...events].slice(0,10);
+  renderEvents();
+}
+function renderEvents(){
+  const el=document.getElementById("events");
+  if(!el)return;
+  el.innerHTML=events.map((e,i)=>`<div style="color:${i===0?'#b4c6d4':'#3a5068'};opacity:${1-i*0.08};border-left-color:${i===0?e.color:'transparent'}">${e.text}</div>`).join('');
+}
+
+/* ── Hop buttons ───────────────────────────────────────────── */
+function rebuildHops(){
+  const el=document.getElementById("hops");
+  if(!el||!graph||!gState)return;
+  if(gState.phase!=="playing"){
+    el.innerHTML=`<div style="text-align:center;padding:20px;color:#3a5068;font-size:12px">${gState.phase==="traveling"?"In transit...":gState.phase==="arrived"?"Delivered!":"—"}</div>`;
+    return;
+  }
+  const nbs=getNeighbors(gState.currentNode,graph.links).sort((a,b)=>a.cost-b.cost);
+  if(nbs.length===0){
+    el.innerHTML='<div style="text-align:center;padding:20px;color:#ff2d78;font-size:12px">No links available!</div>';
+    return;
+  }
+  el.innerHTML=nbs.map(nb=>{
+    const nd=graph.nodes[nb.nid];
+    const isEnd=nb.nid===graph.endId;
+    const cc=nb.cost<80?"cost-low":nb.cost<150?"cost-med":"cost-high";
+    return `<button class="hop-btn${isEnd?' dest':''}" data-nid="${nb.nid}" data-lid="${nb.lid}">
+      <span>${isEnd?'★ ':''}${nd.name}</span>
+      <span class="cost ${cc}">${nb.cost}µs</span>
+    </button>`;
+  }).join('');
+  el.querySelectorAll('.hop-btn').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const nid=parseInt(btn.dataset.nid);
+      const lid=parseInt(btn.dataset.lid);
+      chooseHop(nid,lid);
+    });
+    btn.addEventListener('touchend',(e)=>{
+      e.preventDefault();
+      const nid=parseInt(btn.dataset.nid);
+      const lid=parseInt(btn.dataset.lid);
+      chooseHop(nid,lid);
+    });
+  });
+}
+
+function chooseHop(nid,lid){
+  if(!graph||!gState||gState.phase!=="playing")return;
+  const link=graph.links[lid];
+  if(!link||!link.alive){addEvent("LINK DOWN!","#ff2d78");rebuildHops();return;}
+  gState.travelTo=nid;
+  gState.travelCost=link.cost;
+  gState.travelProg=0;
+  gState.phase="traveling";
+  link.heat=1;
+  addEvent(`→ ${graph.nodes[nid].name} (${link.cost}µs)`,"#00ff88");
+  rebuildHops();
+}
+
+/* ── Canvas tap for nodes ──────────────────────────────────── */
+function onCanvasTap(e){
+  if(!graph||!gState||gState.phase!=="playing")return;
+  const rect=canvas.getBoundingClientRect();
+  const scaleX=graph.W/rect.width,scaleY=graph.H/rect.height;
+  let cx,cy;
+  if(e.touches){cx=(e.touches[0].clientX-rect.left)*scaleX;cy=(e.touches[0].clientY-rect.top)*scaleY;}
+  else{cx=(e.clientX-rect.left)*scaleX;cy=(e.clientY-rect.top)*scaleY;}
+  const nbs=getNeighbors(gState.currentNode,graph.links);
+  for(const nb of nbs){
+    const nd=graph.nodes[nb.nid];
+    if(Math.hypot(cx-nd.x,cy-nd.y)<22){chooseHop(nb.nid,nb.lid);return;}
+  }
+}
+
+/* ── Screen Rendering ──────────────────────────────────────── */
+function renderMenu(){
+  if(animId){cancelAnimationFrame(animId);animId=null;}
+  app.innerHTML=`
+    <div class="hdr">
+      <div class="title"><span class="c">PACKET</span><span class="y">RACER</span></div>
+      <div class="stats">
+        <div class="stat"><div class="v" style="color:#00f0ff">${state.totalScore}</div><div class="l">TOTAL</div></div>
+      </div>
+    </div>
+    <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px">
+      <div style="font-size:8px;color:#3a5068;letter-spacing:0.25em;margin-bottom:12px">SELECT NETWORK</div>
+      <div class="menu-grid">
+        ${LEVELS.map((lv,i)=>`
+          <div class="menu-card" data-lv="${i}">
+            <div style="font-size:9px;color:#00f0ff;font-weight:700">LV.${i+1}</div>
+            <div style="font-size:14px;color:#e8f4ff;font-weight:700;margin:3px 0">${lv.name}</div>
+            <div style="font-size:8px;color:#3a5068">${lv.desc}</div>
+            <div style="font-size:8px;color:#3a5068;margin-top:2px">${lv.nodes} nodes · ${lv.chaos}</div>
+            ${state.bestScores[i]>0?`<div style="font-size:8px;color:#ffe216;margin-top:3px">★ Best: ${state.bestScores[i]}</div>`:''}
+          </div>
+        `).join('')}
+      </div>
+      <div style="margin-top:16px;font-size:8px;color:#3a5068;text-align:center;line-height:1.6;padding:0 20px">
+        You ARE a data packet. Choose each hop manually.<br>Links fail & costs shift in real-time. Beat the ghost!
+      </div>
+    </div>
+  `;
+  app.querySelectorAll('.menu-card').forEach(card=>{
+    card.addEventListener('click',()=>startLevel(parseInt(card.dataset.lv)));
+    card.addEventListener('touchend',(e)=>{e.preventDefault();startLevel(parseInt(card.dataset.lv));});
+  });
+}
+
+function renderGame(){
+  const lv=LEVELS[state.level];
+  app.innerHTML=`
+    <div class="hdr">
+      <div class="title" style="font-size:12px"><span class="c">PKT</span><span class="y">RCR</span></div>
+      <div class="stats">
+        <div class="stat"><div class="v" style="color:#ffe216;font-size:12px">${gState.totalCost}µs</div><div class="l">COST</div></div>
+        <div class="stat"><div class="v" style="color:#00ff88;font-size:12px">${gState.hops}</div><div class="l">HOPS</div></div>
+        <div class="stat"><div class="v" style="color:#bf5af2;font-size:12px">x${gState.combo.toFixed(1)}</div><div class="l">COMBO</div></div>
+      </div>
+    </div>
+    <div class="status-bar">
+      <span class="badge">LV.${state.level+1} ${lv.name}</span>
+      <span class="badge" style="color:#ffe216;border-color:rgba(255,226,22,0.15)">Tap nodes or buttons to hop</span>
+    </div>
+    <div style="padding:4px 10px;position:relative">
+      <canvas id="gameCanvas"></canvas>
+      <div id="overlay-arrived" class="overlay" style="display:none;border-radius:8px">
+        <h2 style="color:#ffe216;text-shadow:0 0 30px rgba(255,226,22,0.4)">DELIVERED!</h2>
+        <p>Score: <span id="finalScore">0</span> · Cost: <span id="finalCost">0</span>µs · Hops: <span id="finalHops">0</span></p>
+        <div class="btn-row">
+          ${state.level<LEVELS.length-1?'<button class="btn btn-cyan" id="btnNext">NEXT →</button>':''}
+          <button class="btn btn-ghost" id="btnRetry">RETRY</button>
+          <button class="btn btn-ghost" id="btnMenu">MENU</button>
+        </div>
+      </div>
+      <div id="overlay-dead" class="overlay" style="display:none;border-radius:8px">
+        <h2 style="color:#ff2d78;text-shadow:0 0 30px rgba(255,45,120,0.4)">PACKET LOST</h2>
+        <p>No route to destination. Network failure stranded you.</p>
+        <div class="btn-row">
+          <button class="btn btn-cyan" id="btnRetryD">RETRY</button>
+          <button class="btn btn-ghost" id="btnMenuD">MENU</button>
+        </div>
+      </div>
+    </div>
+    <div style="padding:0 10px;font-size:9px;color:#3a5068;letter-spacing:0.08em;margin-bottom:4px">AVAILABLE HOPS</div>
+    <div class="hops-panel" id="hops"></div>
+    <div class="events" id="events"></div>
+  `;
+
+  canvas=document.getElementById("gameCanvas");
+  const dpr=window.devicePixelRatio||1;
+  const cw=canvas.parentElement.clientWidth-8;
+  const aspect=graph.H/graph.W;
+  canvas.style.width=cw+"px";
+  canvas.style.height=Math.round(cw*aspect)+"px";
+  canvasW=graph.W;canvasH=graph.H;
+  canvas.width=canvasW*dpr;canvas.height=canvasH*dpr;
+  ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);
+
+  canvas.addEventListener('click',onCanvasTap);
+  canvas.addEventListener('touchstart',onCanvasTap,{passive:false});
+
+  // Overlay buttons
+  const wire=(id,fn)=>{const el=document.getElementById(id);if(el){el.addEventListener('click',fn);el.addEventListener('touchend',(e)=>{e.preventDefault();fn();});}};
+  wire('btnNext',()=>startLevel(state.level+1));
+  wire('btnRetry',()=>startLevel(state.level));
+  wire('btnMenu',()=>{state.screen="menu";renderMenu();});
+  wire('btnRetryD',()=>startLevel(state.level));
+  wire('btnMenuD',()=>{state.screen="menu";renderMenu();});
+
+  rebuildHops();
+  renderEvents();
+  lastT=0;
+  if(animId)cancelAnimationFrame(animId);
+  animId=requestAnimationFrame(render);
+
+  // Poll for phase changes to show overlays
+  const poll=setInterval(()=>{
+    if(!gState)return;
+    const oa=document.getElementById("overlay-arrived");
+    const od=document.getElementById("overlay-dead");
+    if(gState.phase==="arrived"&&oa){
+      oa.style.display="flex";
+      document.getElementById("finalScore").textContent=gState.score;
+      document.getElementById("finalCost").textContent=gState.totalCost;
+      document.getElementById("finalHops").textContent=gState.hops;
+      clearInterval(poll);
+    }
+    if(gState.phase==="dead"&&od){od.style.display="flex";clearInterval(poll);}
+  },100);
+}
+
+function startLevel(lv){
+  state.level=lv;state.screen="game";
+  graph=buildGraph(lv);
+  const opt=dijkstra(graph.nodes,graph.links,graph.startId,graph.endId);
+  gState={
+    phase:"playing",currentNode:graph.startId,path:[graph.startId],
+    hops:0,totalCost:0,combo:1,score:0,
+    travelTo:null,travelCost:0,travelProg:0,
+    ghostPath:opt.path,ghostProg:0,
+  };
+  events=[];
+  addEvent(`LV.${lv+1}: ${LEVELS[lv].name}`,"#ffe216");
+  addEvent(`Route: ${graph.nodes[graph.startId].name} → ${graph.nodes[graph.endId].name}`,"#00f0ff");
+  renderGame();
+}
+
+/* ── Init ──────────────────────────────────────────────────── */
+renderMenu();
+
+})();
+</script>
+</body>
+</html>
